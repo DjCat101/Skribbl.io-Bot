@@ -1,0 +1,896 @@
+@@ -0,0 +1,15 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+from __future__ import division
+from __future__ import print_function
+from __future__ import unicode_literals
+from __future__ import absolute_import
+
+from . import data
+from . import math
+from . import ordered
+from . import diffusion
+from . import palette
+from . import utils
+from .__version__ import __version__, version
+  17  hitherdither/__version__.py 
+@@ -0,0 +1,17 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+__version__.py
+-----------
+:copyright: 2017-05-10 by hbldh <henrik.blidh@nedomkull.com>
+"""
+
+from __future__ import division
+from __future__ import print_function
+from __future__ import absolute_import
+
+# Version information.
+__version__ = '0.1.5'
+version = __version__  # backwards compatibility name
+  74  hitherdither/data/__init__.py 
+@@ -0,0 +1,74 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+try:
+    import pathlib2 as pathlib
+except ImportError:
+    import pathlib
+
+try:
+    from urllib import urlopen
+except ImportError:
+    from urllib.request import urlopen
+
+from PIL import Image
+
+
+def scene():
+    """Chrono Cross PNG image used in Yliluoma's web page.
+    :return: The PIL image of the Chrono Cross scene.
+    """
+    image_path = pathlib.Path(__file__).resolve().parent.joinpath('scene.png')
+    image_url = "http://bisqwit.iki.fi/jutut/kuvat/ordered_dither/scene.png"
+    return _image(image_path, image_url)
+
+
+def scene_undithered():
+    """Chrono Cross PNG image rendered directly with specified palette.
+    :return: The PIL image of the undithered Chrono Cross scene.
+    """
+    return _image(
+        pathlib.Path(__file__).resolve().parent.joinpath('scenenodither.png'),
+        "http://bisqwit.iki.fi/jutut/kuvat/ordered_dither/scenenodither.png")
+
+
+def scene_bayer0():
+    """Chrono Cross PNG image dithered using ordered Bayer matrix method.
+    :return: The PIL image of the ordered Bayer matrix dithered
+        Chrono Cross scene.
+    """
+    return _image(
+        pathlib.Path(__file__).resolve().parent.joinpath('scenebayer0.png'),
+        "http://bisqwit.iki.fi/jutut/kuvat/ordered_dither/scenebayer0.png"
+    )
+
+
+def _image(pth, url):
+    """Load image specified in ``path``. If not present,
+    fetch it from ``url`` and store locally.
+    :param str or :class:`~pathlib.Path` pth:
+    :param str url: URL from where to fetch the image.
+    :return: The :class:`~PIL.Image` requested.
+    """
+    if pth.exists():
+        return Image.open(str(pth))
+    else:
+        r = urlopen(url)
+        with open(str(pth), 'wb') as f:
+            f.write(r.read())
+        return _image(pth, url)
+
+
+def palette():
+    return [0x080000, 0x201A0B, 0x432817, 0x492910,
+            0x234309, 0x5D4F1E, 0x9C6B20, 0xA9220F,
+            0x2B347C, 0x2B7409, 0xD0CA40, 0xE8A077,
+            0x6A94AB, 0xD5C4B3, 0xFCE76E, 0xFCFAE2]
+  208  hitherdither/diffusion.py 
+@@ -0,0 +1,208 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+:mod:`diffusion`
+=======================
+.. moduleauthor:: hbldh <henrik.blidh@swedwise.com>
+Created on 2016-09-12, 11:34
+"""
+
+from __future__ import division
+from __future__ import print_function
+from __future__ import unicode_literals
+from __future__ import absolute_import
+
+import numpy as np
+
+_DIFFUSION_MAPS = {
+    'floyd-steinberg': (
+        (1, 0,  7 / 16),
+        (-1, 1, 3 / 16),
+        (0, 1,  5 / 16),
+        (1, 1,  1 / 16)
+    ),
+    'atkinson': (
+        (1, 0,  1 / 8),
+        (2, 0,  1 / 8),
+        (-1, 1, 1 / 8),
+        (0, 1,  1 / 8),
+        (1, 1,  1 / 8),
+        (0, 2,  1 / 8),
+    ),
+    'jarvis-judice-ninke': (
+        (1, 0,  7 / 48),
+        (2, 0,  5 / 48),
+        (-2, 1, 3 / 48),
+        (-1, 1, 5 / 48),
+        (0, 1,  7 / 48),
+        (1, 1,  5 / 48),
+        (2, 1,  3 / 48),
+        (-2, 2, 1 / 48),
+        (-1, 2, 3 / 48),
+        (0, 2,  5 / 48),
+        (1, 2,  3 / 48),
+        (2, 2,  1 / 48),
+    ),
+    'stucki': (
+        (1, 0,  8 / 42),
+        (2, 0,  4 / 42),
+        (-2, 1, 2 / 42),
+        (-1, 1, 4 / 42),
+        (0, 1,  8 / 42),
+        (1, 1,  4 / 42),
+        (2, 1,  2 / 42),
+        (-2, 2, 1 / 42),
+        (-1, 2, 2 / 42),
+        (0, 2,  4 / 42),
+        (1, 2,  2 / 42),
+        (2, 2,  1 / 42),
+    ),
+    'burkes': (
+        (1, 0,  8 / 32),
+        (2, 0,  4 / 32),
+        (-2, 1, 2 / 32),
+        (-1, 1, 4 / 32),
+        (0, 1,  8 / 32),
+        (1, 1,  4 / 32),
+        (2, 1,  2 / 32),
+    ),
+    'sierra3': (
+        (1, 0,  5 / 32),
+        (2, 0,  3 / 32),
+        (-2, 1, 2 / 32),
+        (-1, 1, 4 / 32),
+        (0, 1,  5 / 32),
+        (1, 1,  4 / 32),
+        (2, 1,  2 / 32),
+        (-1, 2, 2 / 32),
+        (0, 2,  3 / 32),
+        (1, 2,  2 / 32),
+    ),
+    'sierra2': (
+        (1, 0,  4 / 16),
+        (2, 0,  3 / 16),
+        (-2, 1, 1 / 16),
+        (-1, 1, 2 / 16),
+        (0, 1,  3 / 16),
+        (1, 1,  2 / 16),
+        (2, 1,  1 / 16),
+    ),
+    'sierra-2-4a': (
+        (1, 0,  2 / 4),
+        (-1, 1, 1 / 4),
+        (0, 1,  1 / 4),
+    ),
+    'stevenson-arce': (
+        (2, 0,   32 / 200),
+        (-3, 1,  12 / 200),
+        (-1, 1,  26 / 200),
+        (1, 1,   30 / 200),
+        (3, 1,   30 / 200),
+        (-2, 2,  12 / 200),
+        (0, 2,   26 / 200),
+        (2, 2,   12 / 200),
+        (-3, 3,   5 / 200),
+        (-1, 3,  12 / 200),
+        (1, 3,   12 / 200),
+        (3, 3,    5 / 200)
+    )
+}
+
+
+def error_diffusion_dithering(image, palette, method='floyd-steinberg',
+                              order=2):
+    """Perform image dithering by error diffusion method.
+    .. note:: Error diffusion is totally unoptimized and therefore very slow.
+        It is included more as a reference implementation than as a useful
+        method.
+    Reference:
+        http://bisqwit.iki.fi/jutut/kuvat/ordered_dither/error_diffusion.txt
+    Quantization error of *current* pixel is added to the pixels
+    on the right and below according to the formulas below.
+    This works nicely for most static pictures, but causes
+    an avalanche of jittering artifacts if used in animation.
+    Floyd-Steinberg:
+              *  7
+           3  5  1      / 16
+    Jarvis-Judice-Ninke:
+              *  7  5
+        3  5  7  5  3
+        1  3  5  3  1   / 48
+    Stucki:
+              *  8  4
+        2  4  8  4  2
+        1  2  4  2  1   / 42
+    Burkes:
+              *  8  4
+        2  4  8  4  2   / 32
+    Sierra3:
+              *  5  3
+        2  4  5  4  2
+           2  3  2      / 32
+    Sierra2:
+              *  4  3
+        1  2  3  2  1   / 16
+    Sierra-2-4A:
+              *  2
+           1  1         / 4
+    Stevenson-Arce:
+                      *   .  32
+        12   .   26   .  30   .  16
+        .   12    .  26   .  12   .
+        5    .   12   .  12   .   5    / 200
+    Atkinson:
+              *   1   1    / 8
+          1   1   1
+              1
+    :param :class:`PIL.Image` image: The image to apply error
+        diffusion dithering to.
+    :param :class:`~hitherdither.colour.Palette` palette: The palette to use.
+    :param str method: The error diffusion map to use.
+    :param int order: Metric parameter ``ord`` to send to
+        :method:`numpy.linalg.norm`.
+    :return: The error diffusion dithered PIL image of type
+        "P" using the input palette.
+    """
+    ni = np.array(image, 'float')
+
+    diff_map = _DIFFUSION_MAPS.get(method.lower())
+
+    for y in range(ni.shape[0]):
+        for x in range(ni.shape[1]):
+            old_pixel = ni[y, x]
+            old_pixel[old_pixel < 0.0] = 0.0
+            old_pixel[old_pixel > 255.0] = 255.0
+            new_pixel = palette.pixel_closest_colour(old_pixel, order)
+            quantization_error = old_pixel - new_pixel
+            ni[y, x] = new_pixel
+            for dx, dy, diffusion_coefficient in diff_map:
+                xn, yn = x + dx, y + dy
+                if (0 <= xn < ni.shape[1]) and (0 <= yn < ni.shape[0]):
+                    ni[yn, xn] += quantization_error * diffusion_coefficient
+    return palette.create_PIL_png_from_rgb_array(np.array(ni, 'uint8'))
+  21  hitherdither/exceptions.py 
+@@ -0,0 +1,21 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+exceptions
+-----------
+:copyright: 2017-05-10 by hbldh <henrik.blidh@nedomkull.com>
+"""
+
+from __future__ import division
+from __future__ import print_function
+from __future__ import absolute_import
+
+
+class HitherDitherError(Exception):
+    pass
+
+
+class PaletteCouldNotBeCreatedError(Exception):
+    pass
+  0  hitherdither/math/__init__.py 
+No changes.
+  3  hitherdither/ordered/__init__.py 
+@@ -0,0 +1,3 @@
+from . import bayer
+from . import yliluoma
+from . import cluster
+  81  hitherdither/ordered/bayer.py 
+@@ -0,0 +1,81 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+bayer_dithering
+-----------
+:copyright: 2016-09-09 by hbldh <henrik.blidh@nedomkull.com>
+"""
+
+from __future__ import division
+from __future__ import print_function
+from __future__ import unicode_literals
+from __future__ import absolute_import
+
+import numpy as np
+
+
+def B(n, transposed=False):
+    """Get the Bayer matrix with side of length ``n``.
+    Will only work if ``n`` is a power of 2.
+    Reference: http://caca.zoy.org/study/part2.html
+    :param int n: Power of 2 side length of matrix.
+    :return: The Bayer matrix.
+    """
+    return (1 + I(n, transposed)) / (1 + (n * n))
+
+
+def I(n, transposed=False):
+    """Get the index matrix with side of length ``n``.
+    Will only work if ``n`` is a power of 2.
+    Reference: http://caca.zoy.org/study/part2.html
+    :param int n: Power of 2 side length of matrix.
+    :param bool transposed:
+    :return: The index matrix.
+    """
+    if n == 2:
+        if transposed:
+            return np.array([[0, 3], [2, 1]], 'int')
+        else:
+            return np.array([[0, 2], [3, 1]], 'int')
+    else:
+        smaller_I = I(n >> 1, transposed)
+        if transposed:
+            return np.bmat([[4 * smaller_I, 4 * smaller_I + 3],
+                            [4 * smaller_I + 2, 4 * smaller_I + 1]])
+        else:
+            return np.bmat([[4 * smaller_I,     4 * smaller_I + 2],
+                            [4 * smaller_I + 3, 4 * smaller_I + 1]])
+
+
+def bayer_dithering(image, palette, thresholds, order=8):
+    """Render the image using the ordered Bayer matrix dithering pattern.
+    :param :class:`PIL.Image` image: The image to apply
+        Bayer ordered dithering to.
+    :param :class:`~hitherdither.colour.Palette` palette: The palette to use.
+    :param thresholds: Thresholds to apply dithering at.
+    :param int order: The size of the Bayer matrix.
+    :return:  The Bayer matrix dithered PIL image of type "P"
+        using the input palette.
+    """
+    bayer_matrix = B(order)
+    ni = np.array(image, 'uint8')
+    thresholds = np.array(thresholds, 'uint8')
+    xx, yy = np.meshgrid(range(ni.shape[1]), range(ni.shape[0]))
+    xx %= order
+    yy %= order
+    factor_threshold_matrix = (np.expand_dims(
+        bayer_matrix[yy, xx], axis=2) * thresholds)
+    new_image = ni + factor_threshold_matrix
+    return palette.create_PIL_png_from_rgb_array(new_image)
+  64  hitherdither/ordered/cluster.py 
+@@ -0,0 +1,64 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+bayer_dithering
+-----------
+:copyright: 2016-09-09 by hbldh <henrik.blidh@nedomkull.com>
+"""
+
+from __future__ import division
+from __future__ import print_function
+from __future__ import unicode_literals
+from __future__ import absolute_import
+
+import numpy as np
+
+_CLUSTER_DOT_MATRICES = {
+    4: np.array([[12, 5, 6, 13],
+                 [4, 0, 1, 7],
+                 [11, 3, 2, 8],
+                 [15, 10, 9, 14]], 'float') / 16.0,
+    8: np.array([[24, 10, 12, 26, 35, 47, 49, 37],
+                 [8, 0, 2, 14, 45, 59, 61, 51],
+                 [22, 6, 4, 16, 43, 57, 63, 53],
+                 [30, 20, 18, 28, 33, 41, 55, 39],
+                 [34, 46, 48, 36, 25, 11, 13, 27],
+                 [44, 57, 60, 50, 9, 1, 3, 15],
+                 [42, 56, 62, 52, 23, 7, 5, 17],
+                 [32, 40, 54, 38, 31, 21, 19, 29]], 'float') / 64.0,
+    (5, 3): np.array([[9, 3, 0, 6, 12],
+                      [10, 4, 1, 7, 13],
+                      [11, 5, 2, 8, 14]], 'float') / 15.0,
+}
+
+
+def cluster_dot_dithering(image, palette, thresholds, order=4):
+    """Render the image using the ordered Bayer matrix dithering pattern.
+    Reference: http://caca.zoy.org/study/part2.html
+    :param :class:`PIL.Image` image: The image to apply the
+        ordered dithering to.
+    :param :class:`~hitherdither.colour.Palette` palette: The palette to use.
+    :param thresholds: Thresholds to apply dithering at.
+    :param int order: The size of the Bayer matrix.
+    :return:  The Bayer matrix dithered PIL image of type "P"
+        using the input palette.
+    """
+
+    cluster_dot_matrix = _CLUSTER_DOT_MATRICES.get(order)
+    if cluster_dot_matrix is None:
+        raise NotImplementedError(
+            "Only order 4 and 8 is implemented as of yet.")
+    ni = np.array(image, 'uint8')
+    thresholds = np.array(thresholds, 'uint8')
+    xx, yy = np.meshgrid(range(ni.shape[1]), range(ni.shape[0]))
+    xx %= order
+    yy %= order
+    factor_threshold_matrix = (
+        np.expand_dims(cluster_dot_matrix[yy, xx], axis=2) * thresholds)
+    new_image = ni + factor_threshold_matrix
+    return palette.create_PIL_png_from_rgb_array(new_image)
+  1  hitherdither/ordered/yliluoma/__init__.py 
+@@ -0,0 +1 @@
+from ._algorithm_one import yliluomas_1_ordered_dithering
+  167  hitherdither/ordered/yliluoma/_algorithm_one.py 
+@@ -0,0 +1,167 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+algorithm_one
+-----------
+:copyright: 2016-09-12 by hbldh <henrik.blidh@nedomkull.com>
+"""
+
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+from __future__ import unicode_literals
+
+import numpy as np
+
+from ._utils import color_compare, CCIR_LUMINOSITY
+from ..bayer import I
+
+
+def _get_mixing_plan_matrix(palette, order=8):
+    mixing_matrix = []
+    colours = {}
+    colour_component_distances = []
+
+    nn = order * order
+    for i in range(len(palette)):
+        for j in range(i, len(palette)):
+            for ratio in range(0, nn):
+                if i == j and ratio != 0:
+                    break
+                # Determine the two component colors.
+                c_mix = _colour_combine(palette, i, j, ratio / nn)
+                hex_colour = palette.rgb2hex(*c_mix.tolist())
+                colours[hex_colour] = (i, j, ratio / nn)
+                mixing_matrix.append(c_mix)
+
+                c1 = np.array(palette[i], 'int')
+                c2 = np.array(palette[j], 'int')
+                cmpval = color_compare(c1, c2) * 0.1 * \
+                    (np.abs((ratio / float(nn)) - 0.5) + 0.5)
+                colour_component_distances.append(cmpval)
+
+    mixing_matrix = np.array(mixing_matrix)
+    colour_component_distances = np.array(colour_component_distances)
+
+    for c in mixing_matrix:
+        assert palette.rgb2hex(*c.tolist()) in colours
+
+    return mixing_matrix, colours, colour_component_distances
+
+
+def _colour_combine(palette, i, j, ratio):
+    c1, c2 = np.array(palette[i], 'int'), np.array(palette[j], 'int')
+    return np.array(c1 + ratio * (c2 - c1), 'uint8')
+
+
+def _improved_mixing_error_fcn(
+        colour, mixing_matrix,
+        colour_component_distances, luma_mat=None):
+    """Compares two colours using the Psychovisual model.
+    The simplest way to adjust the psychovisual model is to
+    add some code that considers the difference between the
+    two pixel values that are being mixed in the dithering
+    process, and penalizes combinations that differ too much.
+    Wikipedia has an entire article about the topic of comparing
+    two color values. Most of the improved color comparison
+    functions are based on the CIE colorspace, but simple
+    improvements can be done in the RGB space too. Such a simple
+    improvement is shown below. We might call this RGBL, for
+    luminance-weighted RGB.
+    :param :class:`numpy.ndarray` colour: The colour to estimate error to.
+    :param :class:`numpy.ndarray` mixing_matrix: The rgb
+        values of mixed colours.
+    :param :class:`numpy.ndarray` colour_component_distances: The colour
+        distance of the mixed colours.
+    :return: :class:`numpy.ndarray`
+    """
+    colour = np.array(colour, 'int')
+    if luma_mat is None:
+        luma_mat = mixing_matrix.dot(CCIR_LUMINOSITY / 1000.0 / 255.0)
+    luma_colour = colour.dot(CCIR_LUMINOSITY) / (255.0 * 1000.0)
+    luma_diff_squared = (luma_mat - luma_colour) ** 2
+    diff_colour_squared = ((colour - mixing_matrix) / 255.0) ** 2
+    cmpvals = diff_colour_squared.dot(CCIR_LUMINOSITY) / 1000.0
+    cmpvals *= 0.75
+    cmpvals += luma_diff_squared
+    cmpvals += colour_component_distances
+    return cmpvals
+
+
+def yliluomas_1_ordered_dithering(image, palette, order=8):
+    """A dithering method that weighs in color combinations of palette.
+    N.B. tri-tone dithering is not implemented.
+    :param :class:`PIL.Image` image: The image to apply
+        Bayer ordered dithering to.
+    :param :class:`~hitherdither.colour.Palette` palette: The palette to use.
+    :param int order: The Bayer matrix size to use.
+    :return:  The dithered PIL image of type "P" using the input palette.
+    """
+    bayer_matrix = I(order, transposed=True) / 64.0
+    ni = np.array(image, 'uint8')
+    xx, yy = np.meshgrid(range(ni.shape[1]), range(ni.shape[0]))
+    factor_matrix = bayer_matrix[yy % order, xx % order]
+
+    # Prepare all precalculated mixed colours and their respective
+    mixing_matrix, colour_map, colour_component_distances = \
+        _get_mixing_plan_matrix(palette)
+    mixing_matrix = np.array(mixing_matrix, 'int')
+    luma_mat = mixing_matrix.dot(CCIR_LUMINOSITY / 1000.0 / 255.0)
+
+    color_matrix = np.zeros(ni.shape[:2], dtype='uint8')
+    for x, y in zip(np.nditer(xx), np.nditer(yy)):
+
+        min_index = np.argmin(_improved_mixing_error_fcn(
+            ni[y, x, :], mixing_matrix,
+            colour_component_distances, luma_mat))
+        closest_mix_colour = mixing_matrix[min_index, :].tolist()
+        closest_mix_hexcolour = palette.rgb2hex(*closest_mix_colour)
+        plan = colour_map.get(closest_mix_hexcolour)
+        color_matrix[y, x] = (plan[1] if (factor_matrix[y, x] < plan[-1])
+                              else plan[0])
+
+    return palette.create_PIL_png_from_closest_colour(color_matrix)
+
+
+def _evaluate_mixing_error(desired_colour, mixed_colour,
+                           component_colour_1, component_colour_2,
+                           ratio, component_colour_compare_value=None):
+    """Compare colours and weigh in component difference.
+    double EvaluateMixingError(int r,int g,int b,
+                               int r0,int g0,int b0,
+                               int r1,int g1,int b1,
+                               int r2,int g2,int b2,
+                               double ratio)
+    {
+        return ColorCompare(r,g,b, r0,g0,b0)
+             + ColorCompare(r1,g1,b1, r2,g2,b2) * 0.1
+             * (fabs(ratio-0.5)+0.5);
+    }
+    :param desired_colour:
+    :param mixed_colour:
+    :param component_colour_1:
+    :param component_colour_2:
+    :param ratio:
+    :param component_colour_compare_value:
+    :return:
+    """
+    if component_colour_compare_value is None:
+        return (color_compare(desired_colour, mixed_colour) +
+                (color_compare(component_colour_1, component_colour_2) *
+                 0.1 * (np.abs(ratio - 0.5) + 0.5)))
+    else:
+        return (color_compare(desired_colour, mixed_colour) +
+                component_colour_compare_value)
+  42  hitherdither/ordered/yliluoma/_utils.py 
+@@ -0,0 +1,42 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+_utils
+-----------
+:copyright: 2016-09-23 by hbldh <henrik.blidh@nedomkull.com>
+"""
+
+from __future__ import division
+from __future__ import print_function
+from __future__ import unicode_literals
+from __future__ import absolute_import
+
+import numpy as np
+
+# CCIR 601 luminosity
+CCIR_LUMINOSITY = np.array([299.0, 587.0, 114.0])
+
+
+def color_compare(c1, c2):
+    """Compare the difference of two RGB values, weigh by CCIR 601 luminosity
+    double ColorCompare(int r1,int g1,int b1, int r2,int g2,int b2)
+    {
+        double luma1 = (r1*299 + g1*587 + b1*114) / (255.0*1000);
+        double luma2 = (r2*299 + g2*587 + b2*114) / (255.0*1000);
+        double lumadiff = luma1-luma2;
+        double diffR = (r1-r2)/255.0, diffG = (g1-g2)/255.0, diffB = (b1-b2)/255.0;
+        return (diffR*diffR*0.299 + diffG*diffG*0.587 + diffB*diffB*0.114)*0.75
+             + lumadiff*lumadiff;
+    }
+    :return: float
+    """
+    luma_diff = (c1.dot(CCIR_LUMINOSITY) / (255.0 * 1000.0) -
+                 c2.dot(CCIR_LUMINOSITY) / (255.0 * 1000.0))
+    diff_col = (c1 - c2) / 255.0
+    return (((diff_col ** 2).dot(CCIR_LUMINOSITY / 1000.0) * 0.75) +
+            (luma_diff ** 2))
+  243  hitherdither/palette.py 
+@@ -0,0 +1,243 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+palette
+-----------
+:copyright: 2016-09-09 by hbldh <henrik.blidh@nedomkull.com>
+"""
+
+from __future__ import division
+from __future__ import print_function
+from __future__ import unicode_literals
+from __future__ import absolute_import
+
+import numpy as np
+from PIL import Image
+from PIL.ImagePalette import ImagePalette
+
+from hitherdither.exceptions import PaletteCouldNotBeCreatedError
+
+try:
+    string_type = basestring
+except NameError:
+    string_type = str
+
+
+def hex2rgb(h):
+    if isinstance(h, string_type):
+        return hex2rgb(int(h[1:] if h.startswith('#') else h, 16))
+    return (h >> 16) & 0xff, (h >> 8) & 0xff, h & 0xff
+
+
+def rgb2hex(r, g, b):
+    return (r << 16) + (g << 8) + b
+
+
+def _get_all_present_colours(im):
+    """Returns a dict of RGB colours present.
+    N.B. Do not use this except for testing purposes.
+    Reference: http://stackoverflow.com/a/4643911
+    :param im: The image to get number of colours in.
+    :type im: :class:`~PIL.Image.Image`
+    :return: A dict of contained RGB colours as keys.
+    :rtype: dict
+    """
+    from collections import defaultdict
+    by_color = defaultdict(int)
+    for pixel in im.getdata():
+        by_color[pixel] += 1
+    return by_color
+
+
+class Palette(object):
+    """The :mod:`~hitherdither` implementation of a colour palette.
+    Can be instantiated in from colour specifications in the following forms:
+    - ``uint8`` numpy array of size ``[N x 3]``
+    - ``uint8`` numpy array of size ``[3N]``
+    - :class:`~PIL.ImagePalette.ImagePalette`
+    - :class:`~PIL.Image.Image`
+    - list of hex values
+    - list of RGB tuples
+    """
+
+    def __init__(self, data):
+        if isinstance(data, np.ndarray):
+            if data.ndim == 1:
+                self.colours = data.reshape((3, len(data) // 3))
+            else:
+                self.colours = data
+            self.hex = [rgb2hex(*colour) for colour in data]
+        elif isinstance(data, ImagePalette):
+            _tmp = np.frombuffer(data.palette, 'uint8')
+            self.colours = _tmp.reshape((3, len(_tmp) // 3))
+            self.hex = [rgb2hex(*colour) for colour in data]
+        elif isinstance(data, Image.Image):
+            if data.palette is None:
+                raise PaletteCouldNotBeCreatedError(
+                    "Image of mode {0} has no PIL palette. "
+                    "Make sure it is of mode P.".format(data.mode))
+            _colours = data.getcolors()
+            _n_colours = len(_colours)
+            _tmp = np.array(data.getpalette())[:3 * _n_colours]
+            self.colours = _tmp.reshape((3, len(_tmp) // 3)).T
+            self.hex = [rgb2hex(*colour) for colour in self]
+        elif isinstance(data, (list, tuple)):
+            if isinstance(data[0], string_type):
+                # Assume hex strings
+                self.hex = data
+                self.colours = np.array([hex2rgb(c) for c in data])
+            elif isinstance(data[0], int):
+                # Assume hex values
+                self.hex = data  # TODO: Convert to hex string.
+                self.colours = np.array([hex2rgb(c) for c in data])
+            else:
+                # Assume RGB tuples
+                self.colours = np.array(data)
+                self.hex = [rgb2hex(*colour) for colour in data]
+
+    def __iter__(self):
+        for colour in self.colours:
+            yield colour
+
+    def __len__(self):
+        return self.colours.shape[0]
+
+    def __getitem__(self, item):
+        if isinstance(item, int):
+            return self.colours[item, :]
+        else:
+            raise IndexError("Can only reference colours by integer values.")
+
+    def render(self, colours):
+        return np.array(np.take(self.colours, colours, axis=0), 'uint8')
+
+    def image_distance(self, image, order=2):
+        ni = np.array(image, 'float')
+        distances = np.zeros((ni.shape[0], ni.shape[1], len(self)), 'float')
+        for i, colour in enumerate(self):
+            distances[:, :, i] = np.linalg.norm(ni - colour, ord=order, axis=2)
+        return distances
+
+    def image_closest_colour(self, image, order=2):
+        return np.argmin(self.image_distance(image, order=order), axis=2)
+
+    def pixel_distance(self, pixel, order=2):
+        return np.array([np.linalg.norm(pixel - colour, ord=order)
+                         for colour in self])
+
+    def pixel_closest_colour(self, pixel, order=2):
+        return self.colours[np.argmin(
+            self.pixel_distance(pixel, order=order)), :].copy()
+
+    @classmethod
+    def create_by_kmeans(cls, image):
+        raise NotImplementedError()
+
+    @classmethod
+    def create_by_median_cut(cls, image, n=16, dim=None):
+        img = np.array(image)
+        # Create pixel buckets to simplify sorting and splitting.
+        if img.ndim == 3:
+            pixels = img.reshape((img.shape[0] * img.shape[1], img.shape[2]))
+        elif img.ndim == 2:
+            pixels = img.reshape((img.shape[0] * img.shape[1], 1))
+
+        def median_cut(p, dim=None):
+            """Median cut method.
+            Reference:
+            https://en.wikipedia.org/wiki/Median_cut
+            :param p: The pixel array to split in two.
+            :return: Two numpy arrays, split by median cut method.
+            """
+            if dim is not None:
+                sort_dim = dim
+            else:
+                mins = p.min(axis=0)
+                maxs = p.max(axis=0)
+                sort_dim = np.argmax(maxs - mins)
+
+            argument = np.argsort(p[:, sort_dim])
+            p = p[argument, :]
+            m = np.median(p[:, sort_dim])
+            split_mask = p[:, sort_dim] >= m
+            return [p[~split_mask, :].copy(), p[split_mask, :].copy()]
+
+        # Do actual splitting loop.
+        bins = [pixels, ]
+        while len(bins) < n:
+            new_bins = []
+            for bin in bins:
+                new_bins += median_cut(bin, dim)
+            bins = new_bins
+
+        # Average over pixels in each bin to create
+        colours = np.array([np.array(bin.mean(axis=0).round(), 'uint8')
+                            for bin in bins], 'uint8')
+        return cls(colours)
+
+    def create_PIL_png_from_closest_colour(self, cc):
+        """Create a ``P`` PIL image with this palette.
+        Avoids the PIL dithering in favour of our own.
+        Reference: http://stackoverflow.com/a/29438149
+        :param :class:`numpy.ndarray` cc: A ``[M x N]`` array with integer
+            values representing palette colour indices to build image from.
+        :return: A :class:`PIL.Image.Image` image of mode ``P``.
+        """
+        pa_image = Image.new("P", cc.shape[::-1])
+        pa_image.putpalette(self.colours.flatten().tolist())
+        im = Image.fromarray(np.array(cc, 'uint8')).im.convert(
+            "P", 0, pa_image.im)
+        try:
+            # Pillow >= 4
+            return pa_image._new(im)
+        except AttributeError:
+            # Pillow < 4
+            return pa_image._makeself(im)
+
+    def create_PIL_png_from_rgb_array(self, img_array):
+        """Create a ``P`` PIL image from a RGB image with this palette.
+        Avoids the PIL dithering in favour of our own.
+        Reference: http://stackoverflow.com/a/29438149
+        :param :class:`numpy.ndarray` img_array: A ``[M x N x 3]`` uint8
+            array representing RGB colours.
+        :return: A :class:`PIL.Image.Image` image of mode ``P`` with colours
+            available in this palette.
+        """
+        cc = self.image_closest_colour(img_array, order=2)
+        pa_image = Image.new("P", cc.shape[::-1])
+        pa_image.putpalette(self.colours.flatten().tolist())
+        im = Image.fromarray(np.array(cc, 'uint8')).im.convert(
+            "P", 0, pa_image.im)
+        try:
+            # Pillow >= 4
+            return pa_image._new(im)
+        except AttributeError:
+            # Pillow < 4
+            return pa_image._makeself(im)
+
+    @staticmethod
+    def hex2rgb(x):
+        return hex2rgb(x)
+
+    @staticmethod
+    def rgb2hex(r, g, b):
+        return rgb2hex(r, g, b)
+  27  hitherdither/utils.py 
+@@ -0,0 +1,27 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+:mod:`utils`
+=======================
+.. moduleauthor:: hbldh <henrik.blidh@swedwise.com>
+Created on 2016-09-12, 09:50
+"""
+
+from __future__ import division
+from __future__ import print_function
+from __future__ import unicode_literals
+from __future__ import absolute_import
+
+
+import numpy as np
+from PIL import Image
+
+
+def np2pil(img):
+    return Image.fromarray(np.array(img, 'uint8'))
+
+
+def pil2np(img):
+    return np.array(img, 'uint8')
